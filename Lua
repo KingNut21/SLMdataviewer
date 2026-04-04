@@ -1,5 +1,5 @@
 -- ================================================
---  Player Data Viewer v2 | Matcha UI
+--  Player Data Viewer v2.1 | Matcha UI
 -- ================================================
 
 local ITEM_PRICES = {
@@ -12,17 +12,15 @@ local ITEM_PRICES = {
 
 local VIEWS = {"Stats", "Safe", "Backpack", "Settings"}
 
--- ================================================
 -- Shared state
--- ================================================
-local _players    = {}
-local _richMoney  = {name = "?", val = 0}
-local _richSafe   = {name = "?", val = 0}
-local _espObjects = {}
+local _players       = {}
+local _richMoney     = {name = "?", val = 0}
+local _richSafe      = {name = "?", val = 0}
+local _espObjects    = {}
+local _lastRefresh   = "Never"
+local _manualRefresh = false
 
--- ================================================
 -- Helpers
--- ================================================
 local function getVal(data, name)
     local obj = data and data:FindFirstChild(name)
     return obj and tostring(obj.Value) or "N/A"
@@ -30,13 +28,9 @@ end
 
 local function fmtMoney(n)
     n = tonumber(n) or 0
-    local s      = tostring(math.floor(n))
-    local result = ""
-    local count  = 0
+    local s, result, count = tostring(math.floor(n)), "", 0
     for i = #s, 1, -1 do
-        if count > 0 and count % 3 == 0 then
-            result = "," .. result
-        end
+        if count > 0 and count % 3 == 0 then result = "," .. result end
         result = s:sub(i, i) .. result
         count  = count + 1
     end
@@ -51,8 +45,7 @@ local function calcSafeValue(player)
     for _, item in ipairs(safeFolder:GetChildren()) do
         local price = ITEM_PRICES[item.Name]
         if price then
-            local parts = item.Value:split(" ")
-            local cond  = tonumber(parts[1]) or 100
+            local cond = tonumber(item.Value:split(" ")[1]) or 100
             total   = total + math.floor(price * (cond / 100))
             priced  = priced + 1
         else
@@ -62,65 +55,46 @@ local function calcSafeValue(player)
     return total, priced, unpriced
 end
 
-local function refreshPlayers()
+local function doRefresh()
     local list = game.Players:GetPlayers()
     _players   = list
-    local bestMoney, bestMoneyVal = "?", 0
-    local bestSafe,  bestSafeVal  = "?", 0
+    local bMoney, bMoneyV, bSafe, bSafeV = "?", 0, "?", 0
     for _, p in ipairs(list) do
-        local data     = p:FindFirstChild("Data")
-        local moneyObj = data and data:FindFirstChild("Money")
-        local money    = tonumber(moneyObj and moneyObj.Value) or 0
-        if money > bestMoneyVal then
-            bestMoneyVal = money
-            bestMoney    = p.Name
-        end
+        local data  = p:FindFirstChild("Data")
+        local money = tonumber(data and data:FindFirstChild("Money") and data.Money.Value) or 0
+        if money > bMoneyV then bMoneyV = money; bMoney = p.Name end
         local sv = calcSafeValue(p)
-        if sv > bestSafeVal then
-            bestSafeVal = sv
-            bestSafe    = p.Name
-        end
+        if sv > bSafeV then bSafeV = sv; bSafe = p.Name end
     end
-    _richMoney = {name = bestMoney, val = bestMoneyVal}
-    _richSafe  = {name = bestSafe,  val = bestSafeVal}
+    _richMoney   = {name = bMoney, val = bMoneyV}
+    _richSafe    = {name = bSafe,  val = bSafeV}
+    _lastRefresh = #list .. " players"
 end
 
--- ================================================
--- Auto-refresh loop
--- ================================================
+-- Auto + manual refresh loop
 spawn(function()
     while true do
-        pcall(refreshPlayers)
-        task.wait(3)
+        pcall(doRefresh)
+        local t = 0
+        while t < 3 do
+            task.wait(0.1); t = t + 0.1
+            if _manualRefresh then _manualRefresh = false; break end
+        end
     end
 end)
 
--- ================================================
--- ESP
--- ================================================
+-- ESP helpers
 local function getESP(name)
     if not _espObjects[name] then
-        local nl    = Drawing.new("Text")
-        nl.Outline  = true
-        nl.Center   = true
-        nl.FontSize = 14
-        nl.Color    = Color3.new(1, 0.9, 0.31)
-        nl.Visible  = false
-
-        local il    = Drawing.new("Text")
-        il.Outline  = true
-        il.Center   = true
-        il.FontSize = 12
-        il.Color    = Color3.new(0.63, 0.78, 1)
-        il.Visible  = false
-
-        local dl    = Drawing.new("Text")
-        dl.Outline  = true
-        dl.Center   = true
-        dl.FontSize = 11
-        dl.Color    = Color3.new(0.7, 1, 0.7)
-        dl.Visible  = false
-
+        local nl = Drawing.new("Text")
+        nl.Outline = true; nl.Center = true; nl.FontSize = 14
+        nl.Color   = Color3.new(1, 0.9, 0.31); nl.Visible = false
+        local il = Drawing.new("Text")
+        il.Outline = true; il.Center = true; il.FontSize = 12
+        il.Color   = Color3.new(0.63, 0.78, 1); il.Visible = false
+        local dl = Drawing.new("Text")
+        dl.Outline = true; dl.Center = true; dl.FontSize = 11
+        dl.Color   = Color3.new(0.7, 1, 0.7); dl.Visible = false
         _espObjects[name] = {nameLabel = nl, infoLabel = il, distLabel = dl}
     end
     return _espObjects[name]
@@ -128,23 +102,15 @@ end
 
 local function hideESP(name)
     local e = _espObjects[name]
-    if e then
-        e.nameLabel.Visible = false
-        e.infoLabel.Visible = false
-        e.distLabel.Visible = false
-    end
+    if e then e.nameLabel.Visible = false; e.infoLabel.Visible = false; e.distLabel.Visible = false end
 end
 
 local function removeESP(name)
     local e = _espObjects[name]
-    if e then
-        e.nameLabel:Remove()
-        e.infoLabel:Remove()
-        e.distLabel:Remove()
-        _espObjects[name] = nil
-    end
+    if e then e.nameLabel:Remove(); e.infoLabel:Remove(); e.distLabel:Remove(); _espObjects[name] = nil end
 end
 
+-- ESP loop
 spawn(function()
     while true do
         task.wait(0.05)
@@ -165,18 +131,15 @@ spawn(function()
                     local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 
                     if hrp and espOn then
-                        local headPos = Vector3.new(
-                            hrp.Position.X,
-                            hrp.Position.Y + 3.5,
-                            hrp.Position.Z
-                        )
-                        local wok, screenPos, onSc = pcall(WorldToScreen, headPos)
-                        if wok and screenPos then
+                        local headVec = Vector3.new(hrp.Position.X, hrp.Position.Y + 3.5, hrp.Position.Z)
+                        local wok, screenPos, onSc = pcall(WorldToScreen, headVec)
+
+                        if wok and screenPos and type(screenPos.X) == "number" then
                             local esp  = getESP(player.Name)
                             local data = player:FindFirstChild("Data")
 
                             esp.nameLabel.Text     = player.Name
-                            esp.nameLabel.Position = screenPos
+                            esp.nameLabel.Position = Vector2.new(screenPos.X, screenPos.Y)
                             esp.nameLabel.Visible  = (onSc == true)
 
                             local parts = {}
@@ -188,9 +151,8 @@ spawn(function()
                                 local mon = data and data:FindFirstChild("Money")
                                 table.insert(parts, "$" .. fmtMoney(mon and mon.Value or 0))
                             end
-
                             if #parts > 0 then
-                                esp.infoLabel.Text     = table.concat(parts, "  |  ")
+                                esp.infoLabel.Text     = table.concat(parts, " | ")
                                 esp.infoLabel.Position = Vector2.new(screenPos.X, screenPos.Y + 17)
                                 esp.infoLabel.Visible  = (onSc == true)
                             else
@@ -216,11 +178,8 @@ spawn(function()
                     end
                 end
             end
-
             for name in pairs(_espObjects) do
-                if not active[name] then
-                    removeESP(name)
-                end
+                if not active[name] then removeESP(name) end
             end
         end)
     end
@@ -230,28 +189,28 @@ end)
 -- TAB 1 - Player Viewer
 -- ================================================
 UI.AddTab("Player Viewer", function(tab)
-
     local playerNames = {}
-    for _, p in ipairs(_players) do
-        table.insert(playerNames, p.Name)
-    end
+    for _, p in ipairs(_players) do table.insert(playerNames, p.Name) end
 
-    local sel = tab:Section("Select", "Left")
+    local sel = tab:Section("Players", "Left")
     sel:Combo("pv_player", "Player", playerNames, 0)
+    sel:Spacing()
+    sel:Text("Last: " .. _lastRefresh)
+    sel:Button("Refresh Player List", function()
+        _manualRefresh = true
+        notify("Player list refreshed!", "Player Viewer", 2)
+    end)
     sel:Spacing()
     sel:Combo("pv_view", "View", VIEWS, 0)
     sel:Spacing()
-    sel:Text("* = You  |  Refreshes every 3s")
+    sel:Text("* = You")
 
     local pIdx    = UI.GetValue("pv_player") or 0
     local viewIdx = UI.GetValue("pv_view")   or 0
     local target  = _players[pIdx + 1]
     local out     = tab:Section("Data", "Right", nil, 600)
 
-    if not target then
-        out:Text("No players found.")
-        return
-    end
+    if not target then out:Text("No players found. Hit Refresh!"); return end
 
     local isLocal = (target == game.Players.LocalPlayer)
     out:Text((isLocal and "* " or "  ") .. target.Name)
@@ -312,32 +271,19 @@ UI.AddTab("Player Viewer", function(tab)
         else
             local grouped, order = {}, {}
             for _, item in ipairs(items) do
-                if not grouped[item.Name] then
-                    grouped[item.Name] = {}
-                    table.insert(order, item.Name)
-                end
+                if not grouped[item.Name] then grouped[item.Name] = {}; table.insert(order, item.Name) end
                 table.insert(grouped[item.Name], item.Value)
             end
-            table.sort(order, function(a, b)
-                return (ITEM_PRICES[a] or 0) > (ITEM_PRICES[b] or 0)
-            end)
+            table.sort(order, function(a, b) return (ITEM_PRICES[a] or 0) > (ITEM_PRICES[b] or 0) end)
             for _, name in ipairs(order) do
                 local stack = grouped[name]
                 local price = ITEM_PRICES[name]
-                local tag   = price and ("  ~$" .. fmtMoney(price) .. " ea") or "  (no price)"
-                out:Text(name .. "  x" .. #stack .. tag)
+                out:Text(name .. "  x" .. #stack .. (price and ("  ~$" .. fmtMoney(price) .. " ea") or "  (no price)"))
                 for i, val in ipairs(stack) do
                     local p    = val:split(" ")
                     local cond = tonumber(p[1]) or 100
-                    local condTag
-                    if cond >= 70 then
-                        condTag = p[1] .. "% (good)"
-                    elseif cond >= 40 then
-                        condTag = p[1] .. "% (fair)"
-                    else
-                        condTag = p[1] .. "% (low)"
-                    end
-                    out:Text("  " .. i .. ")  Cond: " .. condTag .. "   Ammo: " .. (p[2] or "?"))
+                    local ctag = cond >= 70 and (p[1].."% (good)") or cond >= 40 and (p[1].."% (fair)") or (p[1].."% (low)")
+                    out:Text("  " .. i .. ")  Cond: " .. ctag .. "   Ammo: " .. (p[2] or "?"))
                 end
                 out:Spacing()
             end
@@ -352,39 +298,25 @@ UI.AddTab("Player Viewer", function(tab)
         end
         hdr("Backpack  (" .. #tools .. " tools)")
         out:Spacing()
-        if #tools == 0 then
-            out:Text("Backpack is empty.")
-        else
-            for i, name in ipairs(tools) do
-                out:Text(i .. ".  " .. name)
-            end
-        end
+        if #tools == 0 then out:Text("Backpack is empty.")
+        else for i, name in ipairs(tools) do out:Text(i .. ".  " .. name) end end
         out:Spacing()
-        local trunk     = data and data:FindFirstChild("TrunkItems")
-        local trunkList = trunk and trunk:GetChildren() or {}
+        local trunkList = (data and data:FindFirstChild("TrunkItems") and data.TrunkItems:GetChildren()) or {}
         hdr("Trunk  (" .. #trunkList .. " items)")
         out:Spacing()
-        if #trunkList == 0 then
-            out:Text("Trunk is empty.")
+        if #trunkList == 0 then out:Text("Trunk is empty.")
         else
             for _, item in ipairs(trunkList) do
-                local v = item:IsA("ValueBase") and tostring(item.Value) or item.ClassName
-                out:Text(item.Name .. "  =  " .. v)
+                out:Text(item.Name .. "  =  " .. (item:IsA("ValueBase") and tostring(item.Value) or item.ClassName))
             end
         end
 
     elseif viewIdx == 3 then
-        local settings = data and data:FindFirstChild("Settings")
-        local list     = settings and settings:GetChildren() or {}
+        local list = (data and data:FindFirstChild("Settings") and data.Settings:GetChildren()) or {}
         hdr("Player Settings  (" .. #list .. ")")
         out:Spacing()
-        if #list == 0 then
-            out:Text("No settings found.")
-        else
-            for _, s in ipairs(list) do
-                out:Text(s.Name .. "   " .. tostring(s.Value))
-            end
-        end
+        if #list == 0 then out:Text("No settings found.")
+        else for _, s in ipairs(list) do out:Text(s.Name .. "   " .. tostring(s.Value)) end end
     end
 end)
 
@@ -392,7 +324,7 @@ end)
 -- TAB 2 - ESP
 -- ================================================
 UI.AddTab("ESP", function(tab)
-    local cfg = tab:Section("Settings", "Left")
+    local cfg = tab:Section("ESP Toggles", "Left")
     cfg:Toggle("esp_on",    "Enable ESP",    false)
     cfg:Toggle("esp_lvl",   "Show Level",    true)
     cfg:Toggle("esp_money", "Show Money",    true)
@@ -401,6 +333,28 @@ UI.AddTab("ESP", function(tab)
     cfg:Text("Yellow = Name")
     cfg:Text("Blue   = Level / Money")
     cfg:Text("Green  = Distance (studs)")
+    cfg:Spacing()
+    cfg:Button("Test ESP (draws dot on you)", function()
+        local localP = game.Players.LocalPlayer
+        local char   = workspace:FindFirstChild(localP.Name)
+        local hrp    = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then notify("No HRP found!", "ESP Test", 3); return end
+        local pos    = hrp.Position
+        local ok, screen, onSc = pcall(WorldToScreen, Vector3.new(pos.X, pos.Y + 3, pos.Z))
+        if ok and screen and type(screen.X) == "number" then
+            local dot      = Drawing.new("Circle")
+            dot.Radius     = 8
+            dot.Color      = Color3.new(0, 1, 0)
+            dot.Filled     = true
+            dot.Position   = Vector2.new(screen.X, screen.Y)
+            dot.Visible    = true
+            notify("ESP works! Dot at " .. math.floor(screen.X) .. "," .. math.floor(screen.Y), "ESP Test", 3)
+            wait(3)
+            dot:Remove()
+        else
+            notify("WorldToScreen failed! Run ESP_Debug.lua", "ESP Test", 4)
+        end
+    end)
 
     local stats = tab:Section("Server Overview", "Right", nil, 500)
     stats:Text("[ Richest by Cash ]")
@@ -429,14 +383,11 @@ UI.AddTab("Item Search", function(tab)
     searchSec:InputText("item_query", "Item Name", "")
     searchSec:Spacing()
     local serverTotal = 0
-    for _, player in ipairs(_players) do
-        serverTotal = serverTotal + calcSafeValue(player)
-    end
+    for _, p in ipairs(_players) do serverTotal = serverTotal + calcSafeValue(p) end
     searchSec:Text("Server safe total:")
     searchSec:Text("~$" .. fmtMoney(serverTotal))
     searchSec:Spacing()
-    searchSec:Text("Searches all players")
-    searchSec:Text("SafeItems live.")
+    searchSec:Text("Searches all players SafeItems live.")
 
     local resultsSec = tab:Section("Results", "Right", nil, 600)
     local raw        = UI.GetValue("item_query") or ""
@@ -450,8 +401,7 @@ UI.AddTab("Item Search", function(tab)
             local data       = player:FindFirstChild("Data")
             local safeFolder = data and data:FindFirstChild("SafeItems")
             local items      = safeFolder and safeFolder:GetChildren() or {}
-            local val        = calcSafeValue(player)
-            resultsSec:Text(player.Name .. "  |  " .. #items .. " items  ~$" .. fmtMoney(val))
+            resultsSec:Text(player.Name .. "  |  " .. #items .. " items  ~$" .. fmtMoney(calcSafeValue(player)))
         end
         return
     end
@@ -463,9 +413,7 @@ UI.AddTab("Item Search", function(tab)
         if safeFolder then
             local matches = {}
             for _, item in ipairs(safeFolder:GetChildren()) do
-                if item.Name:lower():find(query, 1, true) then
-                    table.insert(matches, item)
-                end
+                if item.Name:lower():find(query, 1, true) then table.insert(matches, item) end
             end
             if #matches > 0 then
                 resultsSec:Text(player.Name .. "  (" .. #matches .. ")")
@@ -474,8 +422,7 @@ UI.AddTab("Item Search", function(tab)
                     local price = ITEM_PRICES[item.Name]
                     local cond  = tonumber(p[1]) or 100
                     local worth = price and math.floor(price * (cond / 100)) or nil
-                    local tag   = worth and ("  ~$" .. fmtMoney(worth)) or ""
-                    resultsSec:Text("  " .. item.Name .. "  Cond:" .. (p[1] or "?") .. "  Ammo:" .. (p[2] or "?") .. tag)
+                    resultsSec:Text("  " .. item.Name .. "  Cond:" .. (p[1] or "?") .. "  Ammo:" .. (p[2] or "?") .. (worth and ("  ~$"..fmtMoney(worth)) or ""))
                 end
                 resultsSec:Spacing()
                 totalFound = totalFound + #matches
@@ -483,9 +430,6 @@ UI.AddTab("Item Search", function(tab)
         end
     end
 
-    if totalFound == 0 then
-        resultsSec:Text("No results for: " .. raw)
-    else
-        resultsSec:Text("Total: " .. totalFound .. " match(es)")
-    end
+    if totalFound == 0 then resultsSec:Text("No results for: " .. raw)
+    else resultsSec:Text("Total: " .. totalFound .. " match(es)") end
 end)

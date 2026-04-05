@@ -87,13 +87,13 @@ end)
 local function getESP(name)
     if not _espObjects[name] then
         local nl = Drawing.new("Text")
-        nl.Outline = true; nl.Center = true; nl.FontSize = 14
+        nl.Outline = true; nl.Center = true; nl.Size = 14
         nl.Color   = Color3.new(1, 0.9, 0.31); nl.Visible = false
         local il = Drawing.new("Text")
-        il.Outline = true; il.Center = true; il.FontSize = 12
+        il.Outline = true; il.Center = true; il.Size = 12
         il.Color   = Color3.new(0.63, 0.78, 1); il.Visible = false
         local dl = Drawing.new("Text")
-        dl.Outline = true; dl.Center = true; dl.FontSize = 11
+        dl.Outline = true; dl.Center = true; dl.Size = 11
         dl.Color   = Color3.new(0.7, 1, 0.7); dl.Visible = false
         _espObjects[name] = {nameLabel = nl, infoLabel = il, distLabel = dl}
     end
@@ -110,19 +110,45 @@ local function removeESP(name)
     if e then e.nameLabel:Remove(); e.infoLabel:Remove(); e.distLabel:Remove(); _espObjects[name] = nil end
 end
 
--- ESP loop
+-- ESP cached settings (polled every 15 frames to save CPU)
+local _espOn      = false
+local _espName    = true
+local _espLvl     = true
+local _espMon     = true
+local _espDist    = true
+local _espMaxDist = 500   -- stud culling distance
+local _espSize    = 13    -- font size
+local _espPoll    = 0
+
 spawn(function()
+    local localP = game.Players.LocalPlayer
+
     while true do
         task.wait(0.05)
-        pcall(function()
-            local espOn    = UI.GetValue("esp_on")
-            local showLvl  = UI.GetValue("esp_lvl")
-            local showMon  = UI.GetValue("esp_money")
-            local showDist = UI.GetValue("esp_dist")
-            local localP   = game.Players.LocalPlayer
+
+        -- Poll UI settings every 15 ticks (~0.75s)
+        _espPoll = _espPoll + 1
+        if _espPoll >= 15 then
+            _espPoll     = 0
+            _espOn       = UI.GetValue("esp_on")      or false
+            _espName     = UI.GetValue("esp_name")    or false
+            _espLvl      = UI.GetValue("esp_lvl")     or false
+            _espMon      = UI.GetValue("esp_money")   or false
+            _espDist     = UI.GetValue("esp_dist")    or false
+            _espMaxDist  = UI.GetValue("esp_maxdist") or 500
+            _espSize     = UI.GetValue("esp_size")    or 13
+        end
+
+        if not _espOn then
+            -- ESP off: hide all, do nothing else
+            for name in pairs(_espObjects) do hideESP(name) end
+        else
             local localChr = workspace:FindFirstChild(localP.Name)
             local localHRP = localChr and localChr:FindFirstChild("HumanoidRootPart")
-            local active   = {}
+            local lx = localHRP and localHRP.Position.X or 0
+            local ly = localHRP and localHRP.Position.Y or 0
+            local lz = localHRP and localHRP.Position.Z or 0
+            local active = {}
 
             for _, player in ipairs(_players) do
                 if player ~= localP then
@@ -130,58 +156,81 @@ spawn(function()
                     local char = workspace:FindFirstChild(player.Name)
                     local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 
-                    if hrp and espOn then
-                        local headVec = Vector3.new(hrp.Position.X, hrp.Position.Y + 3.5, hrp.Position.Z)
-                        local wok, screenPos, onSc = pcall(WorldToScreen, headVec)
+                    if hrp then
+                        local px = hrp.Position.X
+                        local py = hrp.Position.Y
+                        local pz = hrp.Position.Z
 
-                        if wok and screenPos and type(screenPos.X) == "number" then
-                            local esp  = getESP(player.Name)
-                            local data = player:FindFirstChild("Data")
+                        -- Distance cull BEFORE WorldToScreen (cheap math vs expensive API call)
+                        local dx   = px - lx
+                        local dy   = py - ly
+                        local dz   = pz - lz
+                        local dist = math.floor(math.sqrt(dx*dx + dy*dy + dz*dz))
 
-                            esp.nameLabel.Text     = player.Name
-                            esp.nameLabel.Position = Vector2.new(screenPos.X, screenPos.Y)
-                            esp.nameLabel.Visible  = (onSc == true)
-
-                            local parts = {}
-                            if showLvl then
-                                local lvl = data and data:FindFirstChild("Level")
-                                table.insert(parts, "Lvl " .. (lvl and tostring(lvl.Value) or "?"))
-                            end
-                            if showMon then
-                                local mon = data and data:FindFirstChild("Money")
-                                table.insert(parts, "$" .. fmtMoney(mon and mon.Value or 0))
-                            end
-                            if #parts > 0 then
-                                esp.infoLabel.Text     = table.concat(parts, " | ")
-                                esp.infoLabel.Position = Vector2.new(screenPos.X, screenPos.Y + 17)
-                                esp.infoLabel.Visible  = (onSc == true)
-                            else
-                                esp.infoLabel.Visible = false
-                            end
-
-                            if showDist and localHRP then
-                                local dx   = hrp.Position.X - localHRP.Position.X
-                                local dy   = hrp.Position.Y - localHRP.Position.Y
-                                local dz   = hrp.Position.Z - localHRP.Position.Z
-                                local dist = math.floor(math.sqrt(dx*dx + dy*dy + dz*dz))
-                                esp.distLabel.Text     = dist .. " studs"
-                                esp.distLabel.Position = Vector2.new(screenPos.X, screenPos.Y + 30)
-                                esp.distLabel.Visible  = (onSc == true)
-                            else
-                                esp.distLabel.Visible = false
-                            end
-                        else
+                        if dist > _espMaxDist then
                             hideESP(player.Name)
+                        else
+                            local screenPos, onSc = WorldToScreen(Vector3.new(px, py + 3.5, pz))
+
+                            if screenPos and type(screenPos.X) == "number" then
+                                local e    = getESP(player.Name)
+                                local data = player:FindFirstChild("Data")
+                                local sx   = screenPos.X
+                                local sy   = screenPos.Y
+                                local lineH = _espSize + 3
+                                local curY  = sy
+
+                                -- Line 1: Name
+                                if _espName then
+                                    e.nameLabel.Text     = player.Name
+                                    e.nameLabel.Size     = _espSize
+                                    e.nameLabel.Position = Vector2.new(sx, curY)
+                                    e.nameLabel.Visible  = onSc
+                                    curY = curY + lineH
+                                else
+                                    e.nameLabel.Visible = false
+                                end
+
+                                -- Line 2: Level | $Money (single line, no separate dist label)
+                                local info = ""
+                                if _espLvl then
+                                    local lvl = data and data:FindFirstChild("Level")
+                                    info = "[" .. (lvl and tostring(lvl.Value) or "?") .. "]"
+                                end
+                                if _espMon then
+                                    local mon  = data and data:FindFirstChild("Money")
+                                    local ms   = tostring(math.floor(tonumber(mon and mon.Value) or 0))
+                                    info = info .. (#info > 0 and " $" or "$") .. ms
+                                end
+                                if _espDist then
+                                    info = info .. (#info > 0 and " " or "") .. dist .. "m"
+                                end
+
+                                if #info > 0 then
+                                    e.infoLabel.Text     = info
+                                    e.infoLabel.Size     = _espSize - 2
+                                    e.infoLabel.Position = Vector2.new(sx, curY)
+                                    e.infoLabel.Visible  = onSc
+                                else
+                                    e.infoLabel.Visible = false
+                                end
+
+                                -- Distance label hidden (merged into info line)
+                                e.distLabel.Visible = false
+                            else
+                                hideESP(player.Name)
+                            end
                         end
                     else
                         hideESP(player.Name)
                     end
                 end
             end
+
             for name in pairs(_espObjects) do
                 if not active[name] then removeESP(name) end
             end
-        end)
+        end
     end
 end)
 
@@ -204,6 +253,29 @@ UI.AddTab("Player Viewer", function(tab)
     sel:Combo("pv_view", "View", VIEWS, 0)
     sel:Spacing()
     sel:Text("* = You")
+    sel:Spacing()
+
+    local esp = tab:Section("ESP", "Left")
+    esp:Toggle("esp_on", "Enable ESP", false, function(state)
+        notify(state and "ESP Enabled" or "ESP Disabled", "ESP", 2)
+    end)
+    local kb = esp:Keybind("esp_kb", 0x2D, "toggle")
+    kb:AddToHotkey("ESP", "esp_on")
+    esp:Spacing()
+    esp:Toggle("esp_name",  "Names",    true)
+    esp:Toggle("esp_lvl",   "Level",    true)
+    esp:Toggle("esp_money", "Money",    true)
+    esp:Toggle("esp_dist",  "Distance", true)
+    esp:Spacing()
+    esp:SliderInt("esp_maxdist", "Max Distance", 50, 2000, 500)
+    esp:Tip("Hides ESP beyond this range (studs)")
+    esp:SliderInt("esp_size", "Font Size", 8, 20, 13)
+    esp:Spacing()
+    esp:Button("ESP Status", function()
+        local count = 0
+        for _ in pairs(_espObjects) do count = count + 1 end
+        notify("on=" .. tostring(_espOn) .. " visible=" .. count .. " players=" .. #_players, "ESP", 4)
+    end)
 
     local pIdx    = UI.GetValue("pv_player") or 0
     local viewIdx = UI.GetValue("pv_view")   or 0
@@ -321,62 +393,7 @@ UI.AddTab("Player Viewer", function(tab)
 end)
 
 -- ================================================
--- TAB 2 - ESP
--- ================================================
-UI.AddTab("ESP", function(tab)
-    local cfg = tab:Section("ESP Toggles", "Left")
-    cfg:Toggle("esp_on",    "Enable ESP",    false)
-    cfg:Toggle("esp_lvl",   "Show Level",    true)
-    cfg:Toggle("esp_money", "Show Money",    true)
-    cfg:Toggle("esp_dist",  "Show Distance", true)
-    cfg:Spacing()
-    cfg:Text("Yellow = Name")
-    cfg:Text("Blue   = Level / Money")
-    cfg:Text("Green  = Distance (studs)")
-    cfg:Spacing()
-    cfg:Button("Test ESP (draws dot on you)", function()
-        local localP = game.Players.LocalPlayer
-        local char   = workspace:FindFirstChild(localP.Name)
-        local hrp    = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then notify("No HRP found!", "ESP Test", 3); return end
-        local pos    = hrp.Position
-        local ok, screen, onSc = pcall(WorldToScreen, Vector3.new(pos.X, pos.Y + 3, pos.Z))
-        if ok and screen and type(screen.X) == "number" then
-            local dot      = Drawing.new("Circle")
-            dot.Radius     = 8
-            dot.Color      = Color3.new(0, 1, 0)
-            dot.Filled     = true
-            dot.Position   = Vector2.new(screen.X, screen.Y)
-            dot.Visible    = true
-            notify("ESP works! Dot at " .. math.floor(screen.X) .. "," .. math.floor(screen.Y), "ESP Test", 3)
-            wait(3)
-            dot:Remove()
-        else
-            notify("WorldToScreen failed! Run ESP_Debug.lua", "ESP Test", 4)
-        end
-    end)
-
-    local stats = tab:Section("Server Overview", "Right", nil, 500)
-    stats:Text("[ Richest by Cash ]")
-    stats:Text(_richMoney.name .. "  $" .. fmtMoney(_richMoney.val))
-    stats:Spacing()
-    stats:Text("[ Richest Safe ]")
-    stats:Text(_richSafe.name .. "  ~$" .. fmtMoney(_richSafe.val))
-    stats:Spacing()
-    stats:Text("[ All Players ]")
-    for _, player in ipairs(_players) do
-        local isMe  = (player == game.Players.LocalPlayer)
-        local data  = player:FindFirstChild("Data")
-        local lvl   = data and data:FindFirstChild("Level") and tostring(data.Level.Value) or "?"
-        local money = data and data:FindFirstChild("Money") and tonumber(data.Money.Value) or 0
-        stats:Text(player.Name .. (isMe and " *" or ""))
-        stats:Text("  Lvl " .. lvl .. "   $" .. fmtMoney(money))
-        stats:Spacing()
-    end
-end)
-
--- ================================================
--- TAB 3 - Item Search
+-- TAB 2 - Item Search
 -- ================================================
 UI.AddTab("Item Search", function(tab)
     local searchSec = tab:Section("Search", "Left")
@@ -387,7 +404,14 @@ UI.AddTab("Item Search", function(tab)
     searchSec:Text("Server safe total:")
     searchSec:Text("~$" .. fmtMoney(serverTotal))
     searchSec:Spacing()
-    searchSec:Text("Searches all players SafeItems live.")
+    searchSec:Spacing()
+    searchSec:Text("[ Richest by Cash ]")
+    searchSec:Text(_richMoney.name .. "  $" .. fmtMoney(_richMoney.val))
+    searchSec:Spacing()
+    searchSec:Text("[ Richest Safe ]")
+    searchSec:Text(_richSafe.name .. "  ~$" .. fmtMoney(_richSafe.val))
+    searchSec:Spacing()
+    searchSec:Text("Searches SafeItems live.")
 
     local resultsSec = tab:Section("Results", "Right", nil, 600)
     local raw        = UI.GetValue("item_query") or ""
